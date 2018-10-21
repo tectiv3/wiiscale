@@ -42,16 +42,15 @@ func init() {
 
 // WiiBoard is the currently connected wiiboard connection
 type WiiBoard struct {
-	Events  chan Event
 	Weights chan float64
 
 	conn        *evdev.InputDevice
 	batteryPath string
 
-	calibrating      bool
-	mCalibrating     *sync.RWMutex
-	calibratedWeight float64
-	calibEvents      chan Event
+	calibrating bool
+	mux         *sync.RWMutex
+	lastWeight  float64
+	events      chan Event
 
 	centerTopLeft     int32
 	centerTopRight    int32
@@ -120,12 +119,11 @@ func Detect() (WiiBoard, error) {
 		}
 
 		return WiiBoard{
-			conn:         dev,
-			batteryPath:  batteryPath,
-			mCalibrating: &sync.RWMutex{},
-			Events:       make(chan Event),
-			Weights:      make(chan float64),
-			calibEvents:  make(chan Event),
+			conn:        dev,
+			batteryPath: batteryPath,
+			mux:         &sync.RWMutex{},
+			events:      make(chan Event),
+			Weights:     make(chan float64),
 		}, nil
 	}
 
@@ -155,31 +153,31 @@ func (w *WiiBoard) Listen() {
 			// logrus.Debug(e.String())
 			switch e.Type {
 			case evdev.EV_SYN:
-				w.mCalibrating.RLock()
+				w.mux.RLock()
 				if !w.calibrating {
 					// check for weights deviation, if deviation is big enough
 					// recalibrate and send new weight
 
-					// logrus.WithField("total", curEvent.Total).WithField("w", w.calibratedWeight).Debug(math.Abs(float64(curEvent.Total)-w.calibratedWeight)/w.calibratedWeight > 0.05)
-					if math.Abs(float64(curEvent.Total)-w.calibratedWeight)/w.calibratedWeight > 0.05 {
-						w.mCalibrating.RUnlock()
-						go w.Calibrate()
+					// logrus.WithField("total", curEvent.Total).WithField("w", w.lastWeight).Debug(math.Abs(float64(curEvent.Total)-w.lastWeight)/w.lastWeight > 0.05)
+					if math.Abs(float64(curEvent.Total)-w.lastWeight)/w.lastWeight > 0.05 {
+						w.mux.RUnlock()
+						go w.sendMeanTotal()
 						curEvent = Event{}
 						continue
 					}
 
 					if curEvent.Total < 200 {
-						w.mCalibrating.RUnlock()
+						w.mux.RUnlock()
 						curEvent = Event{}
 						continue
 					}
 				}
-				w.mCalibrating.RUnlock()
+				w.mux.RUnlock()
 
 				// send current event and reset it.
 				// Don't block on sending if other side is slower than input events
 				select {
-				case w.calibEvents <- curEvent:
+				case w.events <- curEvent:
 				default:
 				}
 				curEvent = Event{}
@@ -218,30 +216,19 @@ func (w *WiiBoard) Listen() {
 	}
 }
 
-func (w *WiiBoard) GetCalibrated() float64 {
-	w.mCalibrating.RLock()
-	defer w.mCalibrating.RUnlock()
-	return w.calibratedWeight
-}
-
-// Calibrate ask for the board to calibrate.
-// No events will be transmitted to w.Events meanwhile.
-func (w *WiiBoard) Calibrate() {
-	w.mCalibrating.RLock()
+func (w *WiiBoard) sendMeanTotal() {
+	w.mux.RLock()
 	if w.calibrating {
-		w.mCalibrating.RUnlock()
+		w.mux.RUnlock()
 		return
 	}
-	w.mCalibrating.RUnlock()
-	w.mCalibrating.Lock()
-	w.calibratedWeight = 0
+	w.mux.RUnlock()
+	w.mux.Lock()
+	w.lastWeight = 0
 	w.calibrating = true
-	w.mCalibrating.Unlock()
-	// if w.calibratedWeight > 0 {
-	//     logrus.Infof("Skipping calibration, offset set to: %d", int(offset))
-	//     return
-	// }
-	logrus.Info("Calibrating...")
+	w.mux.Unlock()
+
+	// logrus.Debug("Calibrating...")
 	measureTime := time.Now().Add(3 * time.Second)
 
 	var topLeft, topRight, bottomRight, bottomLeft int32
@@ -253,7 +240,7 @@ func (w *WiiBoard) Calibrate() {
 			break
 		}
 		select {
-		case e := <-w.calibEvents:
+		case e := <-w.events:
 			newWeight := e.TopLeft + e.TopRight + e.BottomRight + e.BottomLeft
 			// skips if one sensor sends 0, as we want an equilibrium state, we skip this invalid measure
 			if e.TopLeft == 0 || e.TopRight == 0 || e.BottomLeft == 0 || e.BottomRight == 0 {
@@ -279,10 +266,10 @@ func (w *WiiBoard) Calibrate() {
 			bottomLeft += e.BottomLeft
 			n++
 		case <-time.After(5 * time.Second):
-			logrus.Info("Canceled.")
-			w.mCalibrating.Lock()
+			// logrus.Debug("Canceled.")
+			w.mux.Lock()
 			w.calibrating = false
-			w.mCalibrating.Unlock()
+			w.mux.Unlock()
 			return
 		}
 
@@ -293,18 +280,18 @@ func (w *WiiBoard) Calibrate() {
 	w.centerBottomRight = bottomRight / n
 	w.centerBottomLeft = bottomLeft / n
 
-	w.mCalibrating.Lock()
-	w.calibratedWeight = float64((topLeft + topRight + bottomRight + bottomLeft) / n)
+	w.mux.Lock()
+	w.lastWeight = float64((topLeft + topRight + bottomRight + bottomLeft) / n)
 	w.calibrating = false
-	logrus.Debugf("Calibrated! %.2f", w.calibratedWeight)
+	// logrus.Debugf("Calibrated! %.2f", w.lastWeight)
 
-	// send current event and reset it.
+	// send current weight.
 	// Don't block on sending if other side is slower than input events
 	select {
-	case w.Weights <- w.calibratedWeight:
+	case w.Weights <- w.lastWeight:
 	default:
 	}
-	w.mCalibrating.Unlock()
+	w.mux.Unlock()
 }
 
 // Battery returns current power level

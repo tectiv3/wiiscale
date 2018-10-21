@@ -16,12 +16,12 @@ func main() {
 	battery, err := board.Battery()
 	if err != nil {
 		fmt.Println(err)
+		os.Exit(1)
 	}
-	fmt.Println(battery)
+	fmt.Printf("Battery level: %d%%\n", battery)
 	go board.Listen()
-	// board.Calibrate()
+
 	for weight := range board.Weights {
-		// fmt.Printf("%+v. Total: %0.2f, calibrated: %0.2f\n", event, event.Total/100, board.GetCalibrated()/100)
-		fmt.Printf("Got weight: %0.2f\n", weight)
+		fmt.Printf("Got weight: %0.2f\n", weight/100)
 	}
 }
