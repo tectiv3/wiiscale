@@ -20,7 +20,8 @@ func main() {
 	fmt.Println(battery)
 	go board.Listen()
 	// board.Calibrate()
-	for event := range board.Events {
-		fmt.Printf("%+v. Total: %0.2f, calibrated: %0.2f\n", event, event.Total/100, board.GetCalibrated()/100)
+	for weight := range board.Weights {
+		// fmt.Printf("%+v. Total: %0.2f, calibrated: %0.2f\n", event, event.Total/100, board.GetCalibrated()/100)
+		fmt.Printf("Got weight: %0.2f\n", weight)
 	}
 }

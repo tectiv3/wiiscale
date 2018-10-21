@@ -42,7 +42,8 @@ func init() {
 
 // WiiBoard is the currently connected wiiboard connection
 type WiiBoard struct {
-	Events chan Event
+	Events  chan Event
+	Weights chan float64
 
 	conn        *evdev.InputDevice
 	batteryPath string
@@ -123,6 +124,7 @@ func Detect() (WiiBoard, error) {
 			batteryPath:  batteryPath,
 			mCalibrating: &sync.RWMutex{},
 			Events:       make(chan Event),
+			Weights:      make(chan float64),
 			calibEvents:  make(chan Event),
 		}, nil
 	}
@@ -135,7 +137,6 @@ func Detect() (WiiBoard, error) {
 // Listen start sending events on Events property of the board
 // Necessary before doing any operation, like calibrating
 func (w *WiiBoard) Listen() {
-	var sendTo *chan Event
 	curEvent := Event{}
 	_ = curEvent
 	for {
@@ -155,11 +156,11 @@ func (w *WiiBoard) Listen() {
 			switch e.Type {
 			case evdev.EV_SYN:
 				w.mCalibrating.RLock()
-				if w.calibrating {
-					sendTo = &w.calibEvents
-				} else {
-					sendTo = &w.Events
-					logrus.WithField("total", curEvent.Total).WithField("w", w.calibratedWeight).Debug(math.Abs(float64(curEvent.Total)-w.calibratedWeight)/w.calibratedWeight > 0.05)
+				if !w.calibrating {
+					// check for weights deviation, if deviation is big enough
+					// recalibrate and send new weight
+
+					// logrus.WithField("total", curEvent.Total).WithField("w", w.calibratedWeight).Debug(math.Abs(float64(curEvent.Total)-w.calibratedWeight)/w.calibratedWeight > 0.05)
 					if math.Abs(float64(curEvent.Total)-w.calibratedWeight)/w.calibratedWeight > 0.05 {
 						w.mCalibrating.RUnlock()
 						go w.Calibrate()
@@ -178,7 +179,7 @@ func (w *WiiBoard) Listen() {
 				// send current event and reset it.
 				// Don't block on sending if other side is slower than input events
 				select {
-				case *sendTo <- curEvent:
+				case w.calibEvents <- curEvent:
 				default:
 				}
 				curEvent = Event{}
@@ -226,6 +227,12 @@ func (w *WiiBoard) GetCalibrated() float64 {
 // Calibrate ask for the board to calibrate.
 // No events will be transmitted to w.Events meanwhile.
 func (w *WiiBoard) Calibrate() {
+	w.mCalibrating.RLock()
+	if w.calibrating {
+		w.mCalibrating.RUnlock()
+		return
+	}
+	w.mCalibrating.RUnlock()
 	w.mCalibrating.Lock()
 	w.calibratedWeight = 0
 	w.calibrating = true
@@ -235,43 +242,50 @@ func (w *WiiBoard) Calibrate() {
 	//     return
 	// }
 	logrus.Info("Calibrating...")
-	exitTime := time.Now().Add(3 * time.Second)
+	measureTime := time.Now().Add(3 * time.Second)
 
 	var topLeft, topRight, bottomRight, bottomLeft int32
 	lastWeight := int32(0)
 	var n int32
 	for {
 		// We want at least 100 valid measures over 3 seconds
-		if time.Now().After(exitTime) && n > 100 {
+		if time.Now().After(measureTime) && n > 100 {
 			break
 		}
+		select {
+		case e := <-w.calibEvents:
+			newWeight := e.TopLeft + e.TopRight + e.BottomRight + e.BottomLeft
+			// skips if one sensor sends 0, as we want an equilibrium state, we skip this invalid measure
+			if e.TopLeft == 0 || e.TopRight == 0 || e.BottomLeft == 0 || e.BottomRight == 0 {
+				continue
+			}
 
-		e := <-w.calibEvents
-		newWeight := e.TopLeft + e.TopRight + e.BottomRight + e.BottomLeft
-		logrus.WithField("new", newWeight).Debug("calibrate!")
-		// skips if one sensor sends 0, as we want an equilibrium state, we skip this invalid measure
-		if e.TopLeft == 0 || e.TopRight == 0 || e.BottomLeft == 0 || e.BottomRight == 0 {
-			continue
-		}
+			// reset if weight is too light or changed by more than 20%: not stable yet!
+			if newWeight < 100 || math.Abs(float64(lastWeight-newWeight))/float64(newWeight) > 0.2 {
+				topLeft = 0
+				topRight = 0
+				bottomRight = 0
+				bottomLeft = 0
+				n = 0
+				measureTime = time.Now().Add(3 * time.Second)
+				lastWeight = newWeight
+				continue
+			}
 
-		// reset if weight is too light or changed by more than 20%: not stable yet!
-		if newWeight < 100 || math.Abs(float64(lastWeight-newWeight))/float64(newWeight) > 0.2 {
-			topLeft = 0
-			topRight = 0
-			bottomRight = 0
-			bottomLeft = 0
-			n = 0
-			exitTime = time.Now().Add(3 * time.Second)
 			lastWeight = newWeight
-			continue
+			topLeft += e.TopLeft
+			topRight += e.TopRight
+			bottomRight += e.BottomRight
+			bottomLeft += e.BottomLeft
+			n++
+		case <-time.After(5 * time.Second):
+			logrus.Info("Canceled.")
+			w.mCalibrating.Lock()
+			w.calibrating = false
+			w.mCalibrating.Unlock()
+			return
 		}
 
-		lastWeight = newWeight
-		topLeft += e.TopLeft
-		topRight += e.TopRight
-		bottomRight += e.BottomRight
-		bottomLeft += e.BottomLeft
-		n++
 	}
 
 	w.centerTopLeft = topLeft / n
@@ -283,6 +297,13 @@ func (w *WiiBoard) Calibrate() {
 	w.calibratedWeight = float64((topLeft + topRight + bottomRight + bottomLeft) / n)
 	w.calibrating = false
 	logrus.Debugf("Calibrated! %.2f", w.calibratedWeight)
+
+	// send current event and reset it.
+	// Don't block on sending if other side is slower than input events
+	select {
+	case w.Weights <- w.calibratedWeight:
+	default:
+	}
 	w.mCalibrating.Unlock()
 }
 
