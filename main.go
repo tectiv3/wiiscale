@@ -2,23 +2,24 @@ package main
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/tectiv3/wiiscale/wiiboard"
 )
 
 func main() {
-	board, err := wiiboard.Detect()
-	if err != nil {
+	board := wiiboard.New()
+	if err := board.Detect(); err != nil {
 		fmt.Println(err)
-		os.Exit(1)
+		return
 	}
-	battery, err := board.Battery()
-	if err != nil {
+
+	if battery, err := board.Battery(); err != nil {
 		fmt.Println(err)
-		os.Exit(1)
+		return
+	} else {
+		fmt.Printf("Battery level: %d%%\n", battery)
 	}
-	fmt.Printf("Battery level: %d%%\n", battery)
+
 	go board.Listen()
 
 	for weight := range board.Weights {
