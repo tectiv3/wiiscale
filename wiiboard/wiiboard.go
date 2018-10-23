@@ -38,6 +38,18 @@ func init() {
 
 	logrus.Level, _ = log.ParseLevel("debug")
 	log.SetLevel(logrus.Level)
+
+	f, err := os.OpenFile("/tmp/wii.log", os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
+	if err != nil {
+		logrus.Error(err)
+		return
+	}
+
+	log.SetOutput(f)
+	stdlog.SetOutput(f)
+	logrus.Out = f
+
+	logrus.Info("Started wii-scale")
 }
 
 // wiiBoard is the currently connected wiiboard connection
@@ -139,9 +151,9 @@ func (w *wiiBoard) Listen() {
 	for {
 		events, err := w.conn.Read()
 		if err != nil {
-			logrus.Info("Error in getting event from device: %v", err)
-			// die on error
-			os.Exit(1)
+			logrus.Error("Reading event error: %v", err)
+			// board disconnected, exit
+			os.Exit(0)
 		}
 		// logrus.Debugf("Got %d events, ranging...", len(events))
 		if len(events) < 5 {
@@ -156,8 +168,6 @@ func (w *wiiBoard) Listen() {
 				if !w.calibrating {
 					// check for weights deviation, if deviation is big enough
 					// recalibrate and send new weight
-
-					// logrus.WithField("total", curEvent.Total).WithField("w", w.lastWeight).Debug(math.Abs(float64(curEvent.Total)-w.lastWeight)/w.lastWeight > 0.05)
 					if math.Abs(float64(curEvent.Total)-w.lastWeight)/w.lastWeight > 0.05 {
 						w.mux.RUnlock()
 						go w.sendMeanTotal()
