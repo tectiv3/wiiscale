@@ -1,0 +1,14 @@
+[Unit]
+Description=WiiScale Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/pi/wiiscale
+ExecStart=/home/pi/wiiscale/wiiscale
+# Restart=never
+# Other Restart options: or always, on-abort, etc
+
+[Install]
+WantedBy=multi-user.target

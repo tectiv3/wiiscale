@@ -1,0 +1,1 @@
+SUBSYSTEMS=="input", ATTRS{name}=="Nintendo Wii Remote Balance Board", RUN+="/bin/systemctl start wiiscale.service"
