@@ -9,8 +9,6 @@ import (
 	"github.com/tectiv3/wiiscale/wiiboard"
 )
 
-var brokerURL = "1"
-
 var f mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Message) {
 	log.Printf("TOPIC: %s\n", msg.Topic())
 	log.Printf("MSG: %s\n", msg.Payload())
@@ -46,7 +44,16 @@ func main() {
 
 	log.Println("Connected to mqtt")
 
-	for weight := range board.Weights {
+	go func() {
+		for weight := range board.Weights {
+			w := weight / 100
+			w += 1.0
+			token := c.Publish("sensors/wiiboard/raw", 0, false, fmt.Sprintf(`{"weight": %0.2f}`, w))
+			token.Wait()
+		}
+	}()
+
+	for weight := range board.Weight {
 		w := weight / 100
 		name := "kin"
 		if w < 60.0 {
@@ -54,6 +61,7 @@ func main() {
 		} else if w > 81.0 {
 			name = "domi"
 		}
+		w += 1.7
 		log.Printf("%s: %0.2f\n", name, w)
 
 		// msg, _ := json.Marshal(struct {

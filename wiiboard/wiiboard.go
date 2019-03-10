@@ -54,6 +54,7 @@ func init() {
 
 // wiiBoard is the currently connected wiiboard connection
 type wiiBoard struct {
+	Weight  chan float64
 	Weights chan float64
 
 	conn        *evdev.InputDevice
@@ -79,6 +80,7 @@ func New() wiiBoard {
 	return wiiBoard{
 		mux:     &sync.RWMutex{},
 		events:  make(chan Event),
+		Weight:  make(chan float64),
 		Weights: make(chan float64),
 	}
 }
@@ -161,10 +163,13 @@ func (w *wiiBoard) Listen() {
 			continue
 		}
 		for _, e := range events {
-			// logrus.Debug(e.String())
 			switch e.Type {
 			case evdev.EV_SYN:
 				w.mux.RLock()
+				select {
+				case w.Weights <- float64((topLeft + topRight + bottomRight + bottomLeft) / n):
+				default:
+				}
 				if !w.calibrating {
 					// check for weights deviation, if deviation is big enough
 					// recalibrate and send new weight
@@ -275,6 +280,12 @@ func (w *wiiBoard) sendMeanTotal() {
 			bottomRight += e.BottomRight
 			bottomLeft += e.BottomLeft
 			n++
+			if n%5 == 0 && math.Abs(float64(lastWeight-newWeight))/float64(newWeight) < 0.2 {
+				select {
+				case w.Weights <- float64((topLeft + topRight + bottomRight + bottomLeft) / n):
+				default:
+				}
+			}
 		case <-time.After(5 * time.Second):
 			// logrus.Debug("Canceled.")
 			w.mux.Lock()
@@ -293,7 +304,7 @@ func (w *wiiBoard) sendMeanTotal() {
 	// send current weight.
 	// Don't block on sending if other side is slower than input events
 	select {
-	case w.Weights <- w.lastWeight:
+	case w.Weight <- w.lastWeight:
 	default:
 	}
 	w.mux.Unlock()
